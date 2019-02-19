@@ -3,7 +3,7 @@
 ## Description
 This example demonstrates how you can call Cloud DLP from Apache Beam to 
 redact PII from free text. The flow is as follows: 
-1. Reads data from a CSV
+1. Reads data from a CSV or a PubSub topic
 2. Sends the free text field to the Cloud DLP API 
 to redact ALL BASIC information
 3. Writes the output to BigQuery
