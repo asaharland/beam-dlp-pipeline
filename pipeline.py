@@ -19,15 +19,26 @@ from __future__ import absolute_import
 
 import argparse
 import logging
+import json
 import csv
 
-from redactor.redactor_service import DlpService
+from redactor_transform import IdentifyAndRedactText
 
 import apache_beam as beam
+from apache_beam.io import ReadFromPubSub
 from apache_beam.io import ReadFromText
 from apache_beam.io import WriteToBigQuery
 from apache_beam.options.pipeline_options import PipelineOptions
 from apache_beam.options.pipeline_options import SetupOptions
+
+
+class ParsePubSubMessageFn(beam.DoFn):
+    def __init__(self):
+        super(ParsePubSubMessageFn, self).__init__()
+
+    def process(self, elem):
+        message = json.loads(elem)
+        yield message
 
 
 class ParseFileFn(beam.DoFn):
@@ -42,39 +53,13 @@ class ParseFileFn(beam.DoFn):
         }
 
 
-class RedactPersonalDataFn(beam.DoFn):
-    """Redacts personal information by calling Cloud DLP on the free text field."""
-
-    def __init__(self, project, info_types):
-        self.dlp_client = None
-        self.project = project
-        self.info_types = info_types
-        super(RedactPersonalDataFn, self).__init__()
-
-    def start_bundle(self):
-        self.dlp_client = DlpService(self.project)
-
-    def process(self, elem):
-        elem['text'] = self.dlp_client.deidentify_text(text=elem['text'], info_types=self.info_types)
-        yield elem
-
-
-class IdentifyAndRedactText(beam.PTransform):
-    def __init__(self, project, info_types):
-        self.project = project
-        self.info_types = info_types
-
-    def expand(self, pcoll):
-        return (pcoll
-                | 'RedactPersonalDataFn' >> beam.ParDo(RedactPersonalDataFn(self.project, self.info_types)))
-
-
 def run(argv=None):
-    """Pipeline for reading data from a CSV, redacting the data using Cloud DLP and writing the results to BigQuery"""
+    """Pipeline for reading data from a PubSub topic,
+    redacting the data using Cloud DLP and writing the results to BigQuery"""
     parser = argparse.ArgumentParser()
     parser.add_argument('--input',
                         dest='input',
-                        help='Input file to process.')
+                        help='PubSub topic to read from.')
     parser.add_argument('--output',
                         dest='output',
                         help='BigQuery output dataset and table name in the format dataset.tablename')
@@ -86,24 +71,34 @@ def run(argv=None):
     pipeline_options.view_as(SetupOptions).save_main_session = True
 
     with beam.Pipeline(options=pipeline_options) as p:
-        # Read in the CSV file
-        lines = (p
-                 | 'ReadFromGCS' >> ReadFromText(known_args.input)
-                 | 'ParseFileFn' >> beam.ParDo(ParseFileFn()))
+
+        if 'streaming' in p.options.display_data():
+            # Read in the CSV file
+            lines = (p
+                     | 'ReadFromPubSub' >> ReadFromPubSub(topic=known_args.input).with_output_types(bytes)
+                     | 'DecodeMessage' >> beam.Map(lambda x: x.decode('utf-8'))
+                     | 'ParseMessage' >> beam.ParDo(ParsePubSubMessageFn())
+                     )
+        else:
+            # Read in the CSV file
+            lines = (p
+                     | 'ReadFromGCS' >> ReadFromText(known_args.input)
+                     | 'ParseFileFn' >> beam.ParDo(ParseFileFn()))
 
         # Redact PII from the 'text' column.
-        redacted_rows = lines | 'IdentifyAndRedactText' >> IdentifyAndRedactText('red-dog-piano', ['ALL_BASIC'])
+        redacted_rows = (
+                lines
+                | 'IdentifyAndRedactText' >> IdentifyAndRedactText(p.options.display_data()['project'], ['ALL_BASIC']))
 
         # Format rows and write to BigQuery.
         (redacted_rows
          | 'MapToTableRows' >> beam.Map(lambda row: {'id': row['id'], 'text': row['text']})
          | 'WriteToBigQuery' >> WriteToBigQuery(
-                    'test',
-                    dataset='finance',
+                    known_args.output,
                     schema='id:INTEGER, text:STRING',
                     project=p.options.display_data()['project'],
                     create_disposition=beam.io.BigQueryDisposition.CREATE_IF_NEEDED,
-                    write_disposition=beam.io.BigQueryDisposition.WRITE_TRUNCATE
+                    write_disposition=beam.io.BigQueryDisposition.WRITE_APPEND
                 ))
 
 

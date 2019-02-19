@@ -15,6 +15,8 @@
 # limitations under the License.
 #
 
+from __future__ import absolute_import
+
 from google.cloud.dlp import DlpServiceClient
 
 

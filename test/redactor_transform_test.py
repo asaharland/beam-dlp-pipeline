@@ -21,7 +21,7 @@ import logging
 import unittest
 
 import apache_beam as beam
-import dlp_pipeline
+import batch_pipeline
 from apache_beam.testing.test_pipeline import TestPipeline
 from apache_beam.testing.util import assert_that
 from apache_beam.testing.util import equal_to
@@ -29,7 +29,7 @@ from apache_beam.testing.util import equal_to
 
 class DlpPipelineTest(unittest.TestCase):
 
-    def test_count1(self):
+    def test_redactor(self):
         self.run_pipeline()
 
     def run_pipeline(self):
@@ -39,10 +39,10 @@ class DlpPipelineTest(unittest.TestCase):
                  'text': 'My credit card number is 3765-414016-21817.'},
                 {'id': 2,
                  'text': 'My number should be 0333 7591 018.'}]))
-            results = rows | dlp_pipeline.IdentifyAndRedactText('red-dog-piano', ['ALL_BASIC'])
+            results = rows | batch_pipeline.IdentifyAndRedactText('red-dog-piano', ['ALL_BASIC'])
 
             expected_results = [{'text': u'My credit card number is #################.', 'id': 1},
-                                           {'text': u'My number should be ###########################', 'id': 2}]
+                                {'text': u'My number should be ###########################', 'id': 2}]
 
             assert_that(results, equal_to(expected_results))
 
